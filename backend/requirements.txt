@@ -1,0 +1,5 @@
+flask>=3.0
+flask-cors>=4.0
+scapy>=2.5
+pandas>=2.0
+jinja2>=3.1
