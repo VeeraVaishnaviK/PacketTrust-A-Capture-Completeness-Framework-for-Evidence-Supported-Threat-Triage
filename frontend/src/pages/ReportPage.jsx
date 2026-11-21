@@ -6,7 +6,7 @@ import FindingsTable from '../components/FindingsTable';
 
 export default function ReportPage() {
   const [params] = useSearchParams();
-  const file = params.get('file');
+  const file = params.get('file') || localStorage.getItem('packettrust_file');
   const [comp, setComp] = useState(null);
   const [tri, setTri] = useState(null);
   const [loading, setLoading] = useState(false);

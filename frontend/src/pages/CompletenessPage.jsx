@@ -11,7 +11,7 @@ function scoreBadge(score) {
 
 export default function CompletenessPage() {
   const [params] = useSearchParams();
-  const file = params.get('file');
+  const file = params.get('file') || localStorage.getItem('packettrust_file');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

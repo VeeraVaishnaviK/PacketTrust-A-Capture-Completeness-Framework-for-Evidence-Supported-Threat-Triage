@@ -18,6 +18,8 @@ export default function UploadPage() {
     try {
       const res = await uploadPcap(file);
       setResult(res.data);
+      // Persist current file so other pages can find it
+      localStorage.setItem('packettrust_file', res.data.filename);
     } catch (err) {
       setError(err.response?.data?.error || 'Upload failed');
     } finally {

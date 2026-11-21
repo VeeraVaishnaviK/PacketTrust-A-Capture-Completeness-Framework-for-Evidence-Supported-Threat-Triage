@@ -5,7 +5,7 @@ import FindingsTable from '../components/FindingsTable';
 
 export default function LossSimPage() {
   const [params] = useSearchParams();
-  const file = params.get('file');
+  const file = params.get('file') || localStorage.getItem('packettrust_file');
   const [lossPct, setLossPct] = useState(20);
   const [mode, setMode] = useState('random');
   const [simResult, setSimResult] = useState(null);
