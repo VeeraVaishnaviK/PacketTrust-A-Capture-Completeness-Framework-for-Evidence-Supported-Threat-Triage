@@ -2,96 +2,125 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>PacketTrust Report – {{ filename }}</title>
+<title>PacketTrust Forensic Report – {{ filename }}</title>
 <style>
-  @media print { .no-print { display: none; } }
-  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 2rem; color: #1a1a2e; }
-  h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: .5rem; }
-  h2 { color: #0f3460; margin-top: 2rem; }
-  .meta { background: #f0f4ff; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; }
-  .meta span { margin-right: 2rem; }
+  @media print {
+    .no-print { display: none; }
+    body { margin: 1rem; color: #000; }
+    .card { page-break-inside: avoid; }
+  }
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 2rem; color: #1a1a2e; background: #fff; }
+  h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: .5rem; margin-bottom: 1.5rem; }
+  h2 { color: #0f3460; margin-top: 2rem; border-bottom: 1px solid #ccd; padding-bottom: 0.3rem; }
+  .meta { background: #f0f4ff; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+  .meta span { margin-right: 1.5rem; }
   .score-badge { display: inline-block; padding: .4rem 1rem; border-radius: 20px;
                  font-weight: bold; font-size: 1.3rem; color: #fff; }
   .score-high { background: #27ae60; }
   .score-med  { background: #f39c12; }
   .score-low  { background: #e74c3c; }
-  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
   th, td { border: 1px solid #ccd; padding: .5rem .75rem; text-align: left; }
-  th { background: #e8edf5; }
+  th { background: #e8edf5; font-weight: 600; }
   tr:nth-child(even) { background: #f8f9fc; }
   .severity-High   { color: #e74c3c; font-weight: bold; }
-  .severity-Medium { color: #f39c12; font-weight: bold; }
+  .severity-Medium { color: #d35400; font-weight: bold; }
   .severity-Low    { color: #27ae60; }
-  .status-Confirmed    { color: #27ae60; }
-  .status-Probable     { color: #f39c12; }
-  .status-Unverifiable { color: #e74c3c; }
-  footer { margin-top: 3rem; color: #888; font-size: .85rem; border-top: 1px solid #ddd; padding-top: 1rem; }
+  .status-Confirmed    { color: #27ae60; font-weight: 600; }
+  .status-Probable     { color: #f39c12; font-weight: 600; }
+  .status-Unverifiable { color: #e74c3c; font-weight: 600; }
+  footer { margin-top: 3rem; color: #888; font-size: .85rem; border-top: 1px solid #ddd; padding-top: 1rem; text-align: center; }
 </style>
 </head>
 <body>
 
-<h1>🔒 PacketTrust Forensic Report</h1>
+<h1>🔒 PacketTrust Forensic Evidence &amp; Threat Triage Report</h1>
 
 <div class="meta">
-  <span><strong>File:</strong> {{ filename }}</span>
-  <span><strong>Packets:</strong> {{ comp.packet_count }}</span>
-  <span><strong>Duration:</strong> {{ comp.duration_sec }}s</span>
+  <div>
+    <span><strong>PCAP File:</strong> <code>{{ filename }}</code></span>
+    <span><strong>Total Packets:</strong> {{ comp.packet_count }}</span>
+    <span><strong>Duration:</strong> {{ comp.duration_sec }}s</span>
+  </div>
+  <div>
+    {% set score = comp.overall_score %}
+    <span><strong>Completeness:</strong></span>
+    <span class="score-badge {% if score >= 80 %}score-high{% elif score >= 50 %}score-med{% else %}score-low{% endif %}">
+      {{ score }} / 100
+    </span>
+  </div>
 </div>
 
-<!-- ───── Completeness ───── -->
-<h2>1. Capture Completeness</h2>
-
-{% set score = comp.overall_score %}
-<p>
-  Overall Score:
-  <span class="score-badge {% if score >= 80 %}score-high{% elif score >= 50 %}score-med{% else %}score-low{% endif %}">
-    {{ score }} / 100
-  </span>
-</p>
-
-<table>
-  <tr><th>Gap Type</th><th>Count</th></tr>
-  <tr><td>TCP Sequence Gaps</td><td>{{ comp.gaps.tcp_seq_gaps }}</td></tr>
-  <tr><td>IP ID Gaps</td><td>{{ comp.gaps.ip_id_gaps }}</td></tr>
-  <tr><td>Timestamp Jumps</td><td>{{ comp.gaps.timestamp_jumps }}</td></tr>
-  <tr><td>Missing Handshakes</td><td>{{ comp.gaps.missing_handshakes }}</td></tr>
-</table>
-
-<h3>Per-Flow Breakdown</h3>
-<table>
-  <tr><th>Flow</th><th>Packets</th><th>Score</th><th>Issues</th></tr>
-  {% for f in comp.flows %}
-  <tr>
-    <td><code>{{ f.flow_id }}</code></td>
-    <td>{{ f.packets }}</td>
-    <td>{{ f.score }}</td>
-    <td>{{ f.issues | join(', ') or '—' }}</td>
-  </tr>
-  {% endfor %}
-</table>
-
-<!-- ───── Triage ───── -->
-<h2>2. Threat Triage Findings</h2>
-
+<!-- ───── Section 1: Threat Findings (Prominent) ───── -->
+<h2>1. Evidence-Supported Threat Findings</h2>
 {% if tri.findings %}
 <table>
-  <tr><th>Attack</th><th>Severity</th><th>Status</th><th>Detail</th><th>Confidence</th></tr>
-  {% for f in tri.findings %}
-  <tr>
-    <td>{{ f.attack }}</td>
-    <td class="severity-{{ f.severity }}">{{ f.severity }}</td>
-    <td class="status-{{ f.status }}">{{ f.status }}</td>
-    <td>{{ f.detail }}</td>
-    <td>{{ (f.confidence * 100) | round(0) }}%</td>
-  </tr>
-  {% endfor %}
+  <thead>
+    <tr>
+      <th>Attack Detected</th>
+      <th>Severity</th>
+      <th>Status</th>
+      <th>Detail</th>
+      <th>Confidence</th>
+      <th>Supporting Packets</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in tri.findings %}
+    <tr>
+      <td><strong>{{ f.attack }}</strong></td>
+      <td class="severity-{{ f.severity }}">{{ f.severity }}</td>
+      <td class="status-{{ f.status }}">{{ f.status }}</td>
+      <td>{{ f.detail }}</td>
+      <td>{{ (f.confidence * 100) | round(0) }}%</td>
+      <td>{{ f.supporting_packets | length }} packets</td>
+    </tr>
+    {% endfor %}
+  </tbody>
 </table>
 {% else %}
-<p>No threats detected in this capture.</p>
+<p><em>No attack patterns detected in this capture.</em></p>
 {% endif %}
 
+<!-- ───── Section 2: Gap Analysis ───── -->
+<h2>2. Capture Completeness &amp; Gap Analysis</h2>
+<table>
+  <thead>
+    <tr><th>Forensic Gap Type</th><th>Count Detected</th><th>Forensic Implication</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>TCP Sequence Gaps</td><td><strong>{{ comp.gaps.tcp_seq_gaps }}</strong></td><td>Missing payload segments dropped in transit or capture buffer</td></tr>
+    <tr><td>IP ID Gaps</td><td><strong>{{ comp.gaps.ip_id_gaps }}</strong></td><td>Non-sequential IP IDs indicating packet drops upstream</td></tr>
+    <tr><td>Timestamp Jumps</td><td><strong>{{ comp.gaps.timestamp_jumps }}</strong></td><td>Gaps &gt; 3s between frames indicating capture buffer stall</td></tr>
+    <tr><td>Missing Handshakes</td><td><strong>{{ comp.gaps.missing_handshakes }}</strong></td><td>Flow data captured without initial SYN/SYN-ACK 3-way handshake</td></tr>
+    <tr><td>Missing Teardowns</td><td><strong>{{ comp.gaps.missing_teardowns }}</strong></td><td>Flows abruptly truncated without FIN or RST packets</td></tr>
+    <tr><td>Retransmissions</td><td><strong>{{ comp.gaps.retransmissions }}</strong></td><td>Duplicate sequence numbers indicating packet retransmission</td></tr>
+  </tbody>
+</table>
+
+<!-- ───── Section 3: Flows ───── -->
+<h2>3. Flow Completeness Breakdown</h2>
+<p style="color: #666; font-size: 0.85rem;">
+  Showing top 25 flows with gaps/issues out of {{ comp.flows | length }} total captured flows.
+</p>
+<table>
+  <thead>
+    <tr><th>Flow (5-Tuple)</th><th>Packets</th><th>Score</th><th>Issues / Anomalies</th></tr>
+  </thead>
+  <tbody>
+    {% for f in comp.flows[:25] %}
+    <tr>
+      <td><code>{{ f.flow_id }}</code></td>
+      <td>{{ f.packets }}</td>
+      <td><strong>{{ f.score }}</strong></td>
+      <td>{{ f.issues | join(', ') or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
 <footer>
-  Generated by <strong>PacketTrust</strong> – Capture-Completeness Framework for Evidence-Supported Threat Triage.
+  Generated by <strong>PacketTrust Framework</strong> – Measuring the Impact of Packet Capture Completeness on Forensic Reliability.
   <br>Lab use only. Never infer beyond captured packets.
 </footer>
 

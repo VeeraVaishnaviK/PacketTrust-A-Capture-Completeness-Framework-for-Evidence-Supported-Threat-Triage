@@ -2,19 +2,23 @@
 completeness.py – Parse a PCAP and compute a capture-completeness score.
 
 Gaps detected:
-  • TCP sequence gaps (missing segments within a flow)
-  • IP ID gaps (non-sequential IP identification values)
-  • Timestamp jumps (> 5 s gap between consecutive packets)
-  • Missing TCP handshakes (data flow without observed SYN/SYN-ACK)
+  • TCP sequence gaps      – missing segments within a flow (packet drop in transit)
+  • IP ID gaps             – non-sequential IP identification values from a host
+  • Timestamp jumps        – gaps (> 3 s) between packets (capture buffer overflow)
+  • Missing TCP handshakes – data flow without observed SYN/SYN-ACK
+  • Missing teardowns      – connections terminated without FIN/RST
+  • Retransmissions        – duplicate sequence numbers (network congestion/loss)
 
 Score formula (per flow):
   score = max(0, 100 − penalties)
-    − 10 per TCP seq gap
-    − 5  per IP ID gap
-    − 5  per timestamp jump
-    − 15 if handshake is missing
+    −8  per TCP seq gap
+    −3  per IP ID gap
+    −5  per timestamp jump
+    −12 if handshake is missing
+    −5  if teardown is missing (no FIN/RST seen)
+    −2  per retransmission
 
-Overall score = weighted average of flow scores (weight = packet count).
+Overall score = weighted average of flow scores penalized by capture-level anomalies.
 """
 
 from __future__ import annotations
@@ -36,16 +40,14 @@ def _flow_key(pkt) -> str | None:
     tcp = pkt[TCP]
     src = f"{ip.src}:{tcp.sport}"
     dst = f"{ip.dst}:{tcp.dport}"
-    # canonical ordering so both directions map to the same flow
     if src > dst:
         src, dst = dst, src
     return f"{src}<->{dst} TCP"
 
 
 def _detect_tcp_seq_gaps(pkts) -> int:
-    """Count gaps in TCP sequence numbers within a *sorted* packet list."""
+    """Count gaps in TCP sequence numbers within sorted packets."""
     gaps = 0
-    # group by direction
     dirs: dict[str, list] = defaultdict(list)
     for p in pkts:
         d = f"{p[IP].src}:{p[TCP].sport}->{p[IP].dst}:{p[TCP].dport}"
@@ -56,29 +58,33 @@ def _detect_tcp_seq_gaps(pkts) -> int:
         for i in range(1, len(sorted_p)):
             prev = sorted_p[i - 1]
             curr = sorted_p[i]
-            expected_next = prev[TCP].seq + max(len(bytes(prev[TCP].payload)), 1)
-            if curr[TCP].seq > expected_next + 1:
+            payload_len = len(bytes(prev[TCP].payload))
+            if payload_len == 0:
+                payload_len = 1  # SYN/FIN consume 1 seq number
+            expected_next = prev[TCP].seq + payload_len
+            if curr[TCP].seq > expected_next + 10:
                 gaps += 1
     return gaps
 
 
 def _detect_ip_id_gaps(pkts) -> int:
-    """Count non-sequential IP ID jumps (same src→dst direction)."""
+    """Count non-sequential IP ID jumps for each source IP (sorted chronologically)."""
     gaps = 0
     dirs: dict[str, list] = defaultdict(list)
     for p in pkts:
-        dirs[p[IP].src].append(p)
+        if p.haslayer(IP) and p[IP].id != 0:
+            dirs[p[IP].src].append(p)
     for dir_pkts in dirs.values():
-        sorted_p = sorted(dir_pkts, key=lambda x: x[IP].id)
+        sorted_p = sorted(dir_pkts, key=lambda x: float(x.time))
         for i in range(1, len(sorted_p)):
             diff = sorted_p[i][IP].id - sorted_p[i - 1][IP].id
-            if diff > 1:
+            if 1 < diff < 500:
                 gaps += 1
     return gaps
 
 
-def _detect_timestamp_jumps(pkts, threshold: float = 5.0) -> int:
-    """Count gaps where consecutive packet timestamps differ > threshold."""
+def _detect_timestamp_jumps(pkts, threshold: float = 3.0) -> int:
+    """Count gaps where consecutive timestamps differ > threshold."""
     jumps = 0
     times = sorted(float(p.time) for p in pkts)
     for i in range(1, len(times)):
@@ -89,14 +95,37 @@ def _detect_timestamp_jumps(pkts, threshold: float = 5.0) -> int:
 
 def _missing_handshake(pkts) -> bool:
     """Return True if the flow has data but no SYN was captured."""
-    flags = set()
+    has_syn = False
     has_payload = False
     for p in pkts:
-        f = p[TCP].flags
-        flags.add(str(f))
+        f = str(p[TCP].flags)
+        if "S" in f and "A" not in f:
+            has_syn = True
         if len(bytes(p[TCP].payload)) > 0:
             has_payload = True
-    return has_payload and "S" not in flags
+    return has_payload and not has_syn
+
+
+def _missing_teardown(pkts) -> bool:
+    """Return True if the flow has no FIN or RST."""
+    for p in pkts:
+        f = str(p[TCP].flags)
+        if "F" in f or "R" in f:
+            return False
+    return len(pkts) > 2
+
+
+def _count_retransmissions(pkts) -> int:
+    """Count likely retransmissions (duplicate seq in same direction)."""
+    retrans = 0
+    dirs: dict[str, set] = defaultdict(set)
+    for p in pkts:
+        d = f"{p[IP].src}:{p[TCP].sport}->{p[IP].dst}:{p[TCP].dport}"
+        seq = p[TCP].seq
+        if seq in dirs[d]:
+            retrans += 1
+        dirs[d].add(seq)
+    return retrans
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +134,7 @@ def _missing_handshake(pkts) -> bool:
 
 def analyse(pcap_path: str) -> dict[str, Any]:
     """
-    Analyse a PCAP file and return completeness metrics.
-
-    Returns dict matching the /api/completeness response format.
+    Analyse a PCAP file and return capture completeness metrics.
     """
     packets = rdpcap(pcap_path)
 
@@ -126,36 +153,53 @@ def analyse(pcap_path: str) -> dict[str, Any]:
         times = [float(p.time) for p in packets]
         duration = round(max(times) - min(times), 2)
 
+    # Capture-level gap detections
+    capture_ip_id_gaps = _detect_ip_id_gaps(packets)
+    capture_ts_jumps = _detect_timestamp_jumps(packets, threshold=3.0)
+
     total_tcp_seq_gaps = 0
-    total_ip_id_gaps = 0
-    total_ts_jumps = 0
     total_missing_hs = 0
+    total_missing_td = 0
+    total_retrans = 0
 
     flow_results: list[dict] = []
 
     for fid, fpkts in flows.items():
         seq_gaps = _detect_tcp_seq_gaps(fpkts)
-        id_gaps = _detect_ip_id_gaps(fpkts)
-        ts_jumps = _detect_timestamp_jumps(fpkts)
+        flow_id_gaps = _detect_ip_id_gaps(fpkts)
+        flow_ts_jumps = _detect_timestamp_jumps(fpkts, threshold=5.0)
         miss_hs = _missing_handshake(fpkts)
+        miss_td = _missing_teardown(fpkts)
+        retrans = _count_retransmissions(fpkts)
 
         total_tcp_seq_gaps += seq_gaps
-        total_ip_id_gaps += id_gaps
-        total_ts_jumps += ts_jumps
         total_missing_hs += int(miss_hs)
+        total_missing_td += int(miss_td)
+        total_retrans += retrans
 
-        penalty = seq_gaps * 10 + id_gaps * 5 + ts_jumps * 5 + (15 if miss_hs else 0)
+        penalty = (
+            seq_gaps * 8
+            + flow_id_gaps * 4
+            + flow_ts_jumps * 6
+            + (12 if miss_hs else 0)
+            + (5 if miss_td else 0)
+            + retrans * 2
+        )
         score = max(0.0, 100.0 - penalty)
 
         issues: list[str] = []
         if seq_gaps:
             issues.append(f"{seq_gaps} TCP seq gap(s)")
-        if id_gaps:
-            issues.append(f"{id_gaps} IP ID gap(s)")
-        if ts_jumps:
-            issues.append(f"{ts_jumps} timestamp jump(s)")
+        if flow_id_gaps:
+            issues.append(f"{flow_id_gaps} IP ID gap(s)")
+        if flow_ts_jumps:
+            issues.append(f"{flow_ts_jumps} timestamp jump(s)")
         if miss_hs:
             issues.append("missing handshake")
+        if miss_td:
+            issues.append("no teardown (FIN/RST)")
+        if retrans:
+            issues.append(f"{retrans} retransmission(s)")
 
         flow_results.append({
             "flow_id": fid,
@@ -164,20 +208,27 @@ def analyse(pcap_path: str) -> dict[str, Any]:
             "issues": issues,
         })
 
-    # overall weighted score
+    # overall weighted score, penalized by capture-level global gaps
     total_pkts = sum(f["packets"] for f in flow_results) or 1
-    overall = sum(f["score"] * f["packets"] for f in flow_results) / total_pkts
+    raw_score = sum(f["score"] * f["packets"] for f in flow_results) / total_pkts
+    global_penalty = min(20.0, (capture_ip_id_gaps * 0.5) + (capture_ts_jumps * 2.0))
+    overall = max(0.0, min(100.0, round(raw_score - global_penalty, 1)))
+
+    # Sort flows: lowest score first (problematic flows first)
+    sorted_flows = sorted(flow_results, key=lambda f: (f["score"], -f["packets"]))
 
     return {
         "file": pcap_path.replace("\\", "/").split("/")[-1],
-        "overall_score": round(overall, 1),
+        "overall_score": overall,
         "packet_count": len(packets),
         "duration_sec": duration,
         "gaps": {
             "tcp_seq_gaps": total_tcp_seq_gaps,
-            "ip_id_gaps": total_ip_id_gaps,
-            "timestamp_jumps": total_ts_jumps,
+            "ip_id_gaps": capture_ip_id_gaps,
+            "timestamp_jumps": capture_ts_jumps,
             "missing_handshakes": total_missing_hs,
+            "missing_teardowns": total_missing_td,
+            "retransmissions": total_retrans,
         },
-        "flows": sorted(flow_results, key=lambda f: f["score"]),
+        "flows": sorted_flows,
     }

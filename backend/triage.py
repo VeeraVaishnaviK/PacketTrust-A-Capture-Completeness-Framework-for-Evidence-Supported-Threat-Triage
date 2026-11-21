@@ -48,8 +48,8 @@ def _detect_port_scan(packets) -> list[dict]:
         for dst, info in targets.items():
             n_ports = len(info["ports"])
             if n_ports >= 15:
-                conf = min(1.0, n_ports / 100)
-                if n_ports >= 50:
+                conf = min(1.0, n_ports / 50)
+                if n_ports >= 30:
                     status = "Confirmed"
                 elif n_ports >= 15:
                     status = "Probable"
@@ -59,7 +59,7 @@ def _detect_port_scan(packets) -> list[dict]:
                     "attack": "Port Scan",
                     "severity": "Medium",
                     "status": status,
-                    "detail": f"Host {src} scanned {n_ports} ports on {dst}",
+                    "detail": f"Host {src} scanned {n_ports} distinct ports on {dst}",
                     "supporting_packets": info["idxs"][:50],
                     "confidence": round(conf, 2),
                 })
@@ -69,45 +69,53 @@ def _detect_port_scan(packets) -> list[dict]:
 def _detect_syn_flood(packets) -> list[dict]:
     """Detect SYN flood attacks."""
     syn_targets: dict[str, list] = defaultdict(list)
-    ack_set: set[str] = set()
+    synack_pairs: set[str] = set()
 
     for idx, pkt in enumerate(packets):
         if pkt.haslayer(TCP) and pkt.haslayer(IP):
             flags = str(pkt[TCP].flags)
-            dst_key = f"{pkt[IP].dst}:{pkt[TCP].dport}"
             if "S" in flags and "A" not in flags:
-                syn_targets[dst_key].append((float(pkt.time), idx))
+                dst_key = f"{pkt[IP].dst}:{pkt[TCP].dport}"
+                syn_targets[dst_key].append((float(pkt.time), idx, f"{pkt[IP].src}:{pkt[TCP].sport}"))
             if "S" in flags and "A" in flags:
-                ack_set.add(f"{pkt[IP].src}:{pkt[TCP].sport}")
+                synack_pairs.add(f"{pkt[IP].dst}:{pkt[TCP].dport}")
 
     findings = []
     for target, syns in syn_targets.items():
-        if len(syns) < 100:
+        if len(syns) < 50:
             continue
         syns.sort()
+        best_window = None
+        max_syn_count = 0
         i = 0
         for j in range(len(syns)):
             while syns[j][0] - syns[i][0] > 5.0:
                 i += 1
             window_count = j - i + 1
-            if window_count >= 100:
-                answered = sum(1 for _, idx in syns[i:j + 1] if target in ack_set)
+            if window_count >= 50 and window_count > max_syn_count:
+                answered = sum(1 for _, _, src_pair in syns[i:j + 1] if src_pair in synack_pairs)
                 ratio = answered / window_count
-                if ratio < 0.3:
-                    conf = min(1.0, window_count / 500)
-                    findings.append({
-                        "attack": "SYN Flood",
-                        "severity": "High",
-                        "status": "Confirmed" if window_count >= 500 else "Probable",
-                        "detail": (
-                            f"{window_count} SYN packets to {target} in "
-                            f"{round(syns[j][0] - syns[i][0], 1)}s, "
-                            f"{int(ratio * 100)}% answered"
-                        ),
-                        "supporting_packets": [idx for _, idx in syns[i:j + 1]][:50],
-                        "confidence": round(conf, 2),
-                    })
-                    break
+                if ratio < 0.35:
+                    max_syn_count = window_count
+                    best_window = (i, j, window_count, ratio)
+
+        if best_window:
+            i, j, window_count, ratio = best_window
+            duration = max(0.1, round(syns[j][0] - syns[i][0], 2))
+            rate = int(window_count / duration) if duration > 0 else window_count
+            conf = min(1.0, round(window_count / 200, 2))
+            status = "Confirmed" if window_count >= 150 else "Probable"
+            findings.append({
+                "attack": "SYN Flood",
+                "severity": "High",
+                "status": status,
+                "detail": (
+                    f"{window_count} SYN packets flooded to {target} in "
+                    f"{duration}s ({rate} pkts/s), {int(ratio * 100)}% answered"
+                ),
+                "supporting_packets": [idx for _, idx, _ in syns[i:j + 1]][:50],
+                "confidence": max(0.70, round(conf, 2)),
+            })
     return findings
 
 
@@ -155,25 +163,32 @@ def _detect_ssh_brute(packets) -> list[dict]:
         if len(conns) < 10:
             continue
         conns.sort()
+        best_window = None
+        max_conn_count = 0
         i = 0
         for j in range(len(conns)):
             while conns[j][0] - conns[i][0] > 60.0:
                 i += 1
             window = j - i + 1
-            if window >= 10:
-                conf = min(1.0, window / 50)
-                findings.append({
-                    "attack": "SSH Brute Force",
-                    "severity": "High",
-                    "status": "Confirmed" if window >= 30 else "Probable",
-                    "detail": (
-                        f"{window} SSH SYNs from {src} in "
-                        f"{round(conns[j][0] - conns[i][0], 1)}s"
-                    ),
-                    "supporting_packets": [idx for _, idx in conns[i:j + 1]][:50],
-                    "confidence": round(conf, 2),
-                })
-                break
+            if window >= 10 and window > max_conn_count:
+                max_conn_count = window
+                best_window = (i, j, window)
+
+        if best_window:
+            i, j, window = best_window
+            duration = max(0.1, round(conns[j][0] - conns[i][0], 1))
+            conf = min(1.0, round(window / 40, 2))
+            status = "Confirmed" if window >= 25 else "Probable"
+            findings.append({
+                "attack": "SSH Brute Force",
+                "severity": "High",
+                "status": status,
+                "detail": (
+                    f"{window} rapid SSH connection attempts from {src} to port 22 in {duration}s"
+                ),
+                "supporting_packets": [idx for _, idx in conns[i:j + 1]][:50],
+                "confidence": max(0.70, round(conf, 2)),
+            })
     return findings
 
 

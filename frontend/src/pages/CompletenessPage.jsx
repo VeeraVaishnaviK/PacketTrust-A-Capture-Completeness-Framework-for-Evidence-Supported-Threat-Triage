@@ -58,6 +58,8 @@ export default function CompletenessPage() {
             <tr><td>IP ID Gaps</td><td>{data.gaps.ip_id_gaps}</td></tr>
             <tr><td>Timestamp Jumps</td><td>{data.gaps.timestamp_jumps}</td></tr>
             <tr><td>Missing Handshakes</td><td>{data.gaps.missing_handshakes}</td></tr>
+            <tr><td>Missing Teardowns</td><td>{data.gaps.missing_teardowns}</td></tr>
+            <tr><td>Retransmissions</td><td>{data.gaps.retransmissions}</td></tr>
           </tbody>
         </table>
       </div>
