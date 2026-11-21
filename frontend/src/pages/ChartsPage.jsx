@@ -17,7 +17,7 @@ export default function ChartsPage() {
   useEffect(() => {
     if (!file) return;
     setLoading(true);
-    runExperiment(file, [0, 10, 20, 30, 50], 20)
+    runExperiment(file, [0, 10, 20, 30, 50], 5)
       .then((r) => setData(r.data))
       .catch((e) => setError(e.response?.data?.error || 'Experiment failed'))
       .finally(() => setLoading(false));

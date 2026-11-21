@@ -1,15 +1,19 @@
 """
 reliability.py – Run triage at multiple loss levels across many trials
 and compare with ground truth to measure detection reliability.
+
+Optimised: reads the source PCAP once and simulates loss in-memory.
 """
 
 from __future__ import annotations
 
 import os
+import random
 import statistics
 from typing import Any
 
-import loss_sim
+from scapy.all import rdpcap, wrpcap
+
 import triage
 
 
@@ -21,6 +25,14 @@ def _reliability_label(detection_rate: float) -> str:
     return "Low"
 
 
+def _simulate_in_memory(packets: list, loss_pct: float, seed: int) -> list:
+    """Drop packets in-memory (random mode) without writing to disk."""
+    if loss_pct <= 0:
+        return packets
+    rng = random.Random(seed)
+    return [p for p in packets if rng.random() > loss_pct / 100]
+
+
 def run_experiment(
     pcap_path: str,
     loss_levels: list[int] | None = None,
@@ -28,8 +40,8 @@ def run_experiment(
     output_dir: str | None = None,
 ) -> dict[str, Any]:
     """
-    1. Run triage at 0 % loss to establish ground truth.
-    2. For each loss level, run *trials* rounds of loss_sim + triage.
+    1. Run triage at 0% loss to establish ground truth.
+    2. For each loss level, run *trials* rounds of in-memory loss + triage.
     3. Compare detected attacks with ground truth.
     """
     if loss_levels is None:
@@ -37,8 +49,11 @@ def run_experiment(
 
     out_dir = output_dir or os.path.dirname(pcap_path)
 
+    # Read the PCAP once
+    all_packets = list(rdpcap(pcap_path))
+
     # --- ground truth (full capture, no loss) ---
-    gt = triage.analyse(pcap_path)
+    gt = triage.analyse_packets(all_packets, os.path.basename(pcap_path))
     ground_truth_attacks = sorted({f["attack"] for f in gt["findings"]})
 
     results: list[dict] = []
@@ -52,17 +67,13 @@ def run_experiment(
             if loss_pct == 0:
                 trial_result = gt
             else:
-                sim = loss_sim.simulate(
-                    pcap_path, loss_pct, mode="random",
-                    output_dir=out_dir, seed=t,
-                )
-                degraded_path = os.path.join(out_dir, sim["output_file"])
-                trial_result = triage.analyse(degraded_path)
-                # clean up temp file
-                try:
-                    os.remove(degraded_path)
-                except OSError:
-                    pass
+                degraded = _simulate_in_memory(all_packets, loss_pct, seed=t)
+                if not degraded:
+                    trial_result = {"findings": []}
+                else:
+                    trial_result = triage.analyse_packets(
+                        degraded, os.path.basename(pcap_path)
+                    )
 
             detected = {f["attack"] for f in trial_result["findings"]}
             confs = [f["confidence"] for f in trial_result["findings"]] or [0.0]

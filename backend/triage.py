@@ -192,7 +192,11 @@ ALL_DETECTORS = [
 def analyse(pcap_path: str) -> dict[str, Any]:
     """Run all threat detectors against a PCAP file."""
     packets = list(rdpcap(pcap_path))
+    return analyse_packets(packets, pcap_path.replace("\\", "/").split("/")[-1])
 
+
+def analyse_packets(packets: list, filename: str = "unknown") -> dict[str, Any]:
+    """Run all threat detectors against an already-loaded packet list."""
     findings: list[dict] = []
     for detector in ALL_DETECTORS:
         findings.extend(detector(packets))
@@ -201,6 +205,6 @@ def analyse(pcap_path: str) -> dict[str, Any]:
     findings.sort(key=lambda f: sev_order.get(f["severity"], 9))
 
     return {
-        "file": pcap_path.replace("\\", "/").split("/")[-1],
+        "file": filename,
         "findings": findings,
     }

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: '/api' });
+const api = axios.create({ baseURL: '/api', timeout: 300000 }); // 5 min timeout for heavy ops
 
 export const uploadPcap = (file) => {
   const fd = new FormData();
